@@ -43,90 +43,130 @@ def normalize_url(
         return URLNormalizationResult(original_url=None, normalized_url=None, warnings=["missing_url"])
 
     warnings: list[str] = []
-    parsed = urlsplit(original_url)
-    if not parsed.netloc and "://" not in original_url:
-        parsed = urlsplit(f"//{original_url}")
-        warnings.append("scheme_missing_assumed_network_location")
+    try:
+        parsed = urlsplit(original_url)
+        if not parsed.netloc and "://" not in original_url:
+            parsed = urlsplit(f"//{original_url}")
+            warnings.append("scheme_missing_assumed_network_location")
 
-    scheme = parsed.scheme.lower() if parsed.scheme else ""
-    hostname = parsed.hostname.lower() if parsed.hostname else None
-    if hostname is None:
+        scheme = parsed.scheme.lower() if parsed.scheme else ""
+        try:
+            hostname = parsed.hostname.lower() if parsed.hostname else None
+        except ValueError:
+            hostname = None
+            warnings.append("invalid_hostname")
+        port = _safe_port(parsed, warnings)
+
+        if hostname is None:
+            return URLNormalizationResult(
+                original_url=original_url,
+                normalized_url=original_url,
+                features={
+                    "scheme": scheme or None,
+                    "hostname": None,
+                    "registered_domain": None,
+                    "subdomain": None,
+                    "suffix": None,
+                    "port": port,
+                    "is_ip_address": False,
+                    "has_punycode": False,
+                    "has_percent_encoding": "%" in original_url,
+                    "url_length": len(original_url),
+                    "path_length": len(parsed.path or ""),
+                    "query_length": len(parsed.query or ""),
+                    "num_subdomains": 0,
+                    "suspicious_keyword_hits": _keyword_hits(original_url, suspicious_keywords),
+                    "digit_count": _digit_count(original_url),
+                    "digit_ratio": _digit_ratio(original_url),
+                },
+                warnings=warnings + ["hostname_missing"],
+            )
+
+        domain_parts = _extract_domain_parts(hostname)
+        normalized_url = urlunsplit(
+            SplitResult(
+                scheme=scheme,
+                netloc=_build_normalized_netloc(parsed, hostname, port=port),
+                path=parsed.path or "",
+                query=parsed.query or "",
+                fragment=parsed.fragment or "",
+            )
+        )
+        suspicious_hits = _keyword_hits(original_url, suspicious_keywords)
+        features = {
+            "scheme": scheme or None,
+            "hostname": hostname,
+            "registered_domain": domain_parts["registered_domain"],
+            "subdomain": domain_parts["subdomain"],
+            "suffix": domain_parts["suffix"],
+            "port": port,
+            "is_ip_address": _is_ip_address(hostname),
+            "has_punycode": "xn--" in hostname,
+            "has_percent_encoding": bool(re.search(r"%[0-9a-fA-F]{2}", original_url)),
+            "url_length": len(original_url),
+            "path_length": len(parsed.path or ""),
+            "query_length": len(parsed.query or ""),
+            "num_subdomains": _subdomain_count(domain_parts["subdomain"]),
+            "path_depth": len([part for part in (parsed.path or "").split("/") if part]),
+            "query_param_count": (parsed.query.count("&") + 1) if parsed.query else 0,
+            "suspicious_keyword_hits": suspicious_hits,
+            "suspicious_keyword_count": len(suspicious_hits),
+            "digit_count": _digit_count(original_url),
+            "digit_ratio": _digit_ratio(original_url),
+            "hostname_digit_count": _digit_count(hostname),
+            "contains_at_symbol": "@" in original_url,
+            "contains_double_slash_path": "//" in (parsed.path or ""),
+            "contains_hyphenated_hostname": "-" in hostname,
+        }
+        return URLNormalizationResult(
+            original_url=original_url,
+            normalized_url=normalized_url or original_url,
+            features=features,
+            warnings=warnings,
+        )
+    except Exception as exc:
         return URLNormalizationResult(
             original_url=original_url,
             normalized_url=original_url,
             features={
-                "scheme": scheme or None,
+                "scheme": None,
                 "hostname": None,
                 "registered_domain": None,
                 "subdomain": None,
                 "suffix": None,
+                "port": None,
                 "is_ip_address": False,
                 "has_punycode": False,
                 "has_percent_encoding": "%" in original_url,
                 "url_length": len(original_url),
-                "path_length": len(parsed.path or ""),
-                "query_length": len(parsed.query or ""),
+                "path_length": 0,
+                "query_length": 0,
                 "num_subdomains": 0,
                 "suspicious_keyword_hits": _keyword_hits(original_url, suspicious_keywords),
                 "digit_count": _digit_count(original_url),
                 "digit_ratio": _digit_ratio(original_url),
             },
-            warnings=warnings + ["hostname_missing"],
+            warnings=warnings + [f"url_normalization_failed:{type(exc).__name__}"],
         )
 
-    domain_parts = _extract_domain_parts(hostname)
-    normalized_url = urlunsplit(
-        SplitResult(
-            scheme=scheme,
-            netloc=_build_normalized_netloc(parsed, hostname),
-            path=parsed.path or "",
-            query=parsed.query or "",
-            fragment=parsed.fragment or "",
-        )
-    )
-    suspicious_hits = _keyword_hits(original_url, suspicious_keywords)
-    features = {
-        "scheme": scheme or None,
-        "hostname": hostname,
-        "registered_domain": domain_parts["registered_domain"],
-        "subdomain": domain_parts["subdomain"],
-        "suffix": domain_parts["suffix"],
-        "port": parsed.port,
-        "is_ip_address": _is_ip_address(hostname),
-        "has_punycode": "xn--" in hostname,
-        "has_percent_encoding": bool(re.search(r"%[0-9a-fA-F]{2}", original_url)),
-        "url_length": len(original_url),
-        "path_length": len(parsed.path or ""),
-        "query_length": len(parsed.query or ""),
-        "num_subdomains": _subdomain_count(domain_parts["subdomain"]),
-        "path_depth": len([part for part in (parsed.path or "").split("/") if part]),
-        "query_param_count": (parsed.query.count("&") + 1) if parsed.query else 0,
-        "suspicious_keyword_hits": suspicious_hits,
-        "suspicious_keyword_count": len(suspicious_hits),
-        "digit_count": _digit_count(original_url),
-        "digit_ratio": _digit_ratio(original_url),
-        "hostname_digit_count": _digit_count(hostname),
-        "contains_at_symbol": "@" in original_url,
-        "contains_double_slash_path": "//" in (parsed.path or ""),
-        "contains_hyphenated_hostname": "-" in hostname,
-    }
-    return URLNormalizationResult(
-        original_url=original_url,
-        normalized_url=normalized_url or original_url,
-        features=features,
-        warnings=warnings,
-    )
 
-
-def _build_normalized_netloc(parsed: SplitResult, hostname: str) -> str:
+def _build_normalized_netloc(parsed: SplitResult, hostname: str, *, port: int | None) -> str:
     credentials = ""
     if parsed.username:
         credentials = parsed.username
         if parsed.password:
             credentials = f"{credentials}:{parsed.password}"
         credentials = f"{credentials}@"
-    port = f":{parsed.port}" if parsed.port is not None else ""
-    return f"{credentials}{hostname}{port}"
+    port_suffix = f":{port}" if port is not None else ""
+    return f"{credentials}{hostname}{port_suffix}"
+
+
+def _safe_port(parsed: SplitResult, warnings: list[str]) -> int | None:
+    try:
+        return parsed.port
+    except ValueError:
+        warnings.append("invalid_port")
+        return None
 
 
 def _extract_domain_parts(hostname: str) -> dict[str, str | None]:

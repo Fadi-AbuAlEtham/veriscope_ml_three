@@ -7,6 +7,7 @@ from veriscope_training.config import DatasetSourceConfig
 from veriscope_training.datasets.base import DatasetRecord
 from veriscope_training.preprocessing.html_extraction import extract_html_content
 from veriscope_training.preprocessing.label_mapping import normalize_record_label
+from veriscope_training.preprocessing.multilingual_dataset import canonical_language
 from veriscope_training.preprocessing.text_processing import TextNormalizationConfig, normalize_text
 from veriscope_training.preprocessing.url_normalization import normalize_url
 from veriscope_training.utils.hashing import sha256_text
@@ -91,6 +92,7 @@ def normalize_dataset_record(
     text_origin = "adapter_text" if record.text else "html_visible_text"
     extracted_text = record.text or html_result.visible_text
     text_result = normalize_text(extracted_text, config=text_config)
+    resolved_language = _resolve_language(record.language, extracted_text, html_result.features)
 
     modality_flags = {
         "has_original_url": bool(url_result.original_url),
@@ -137,7 +139,7 @@ def normalize_dataset_record(
         label_mapping_reason=label_result.mapping_reason,
         is_auxiliary=label_result.is_auxiliary,
         is_supervised=label_result.is_supervised,
-        language=record.language,
+        language=resolved_language,
         timestamp=record.timestamp,
         original_url=url_result.original_url,
         normalized_url=url_result.normalized_url,
@@ -173,3 +175,28 @@ def validate_processed_record(record: ProcessedRecord) -> list[str]:
     if record.modality_flags.get("has_normalized_url") and not record.url_features.get("hostname"):
         warnings.append("normalized_url_without_hostname")
     return warnings
+
+
+def _resolve_language(
+    adapter_language: str | None,
+    extracted_text: str | None,
+    html_features: dict[str, Any],
+) -> str | None:
+    for candidate in (
+        canonical_language(adapter_language),
+        canonical_language(html_features.get("document_language")),
+        _detect_script_language(extracted_text),
+    ):
+        if candidate and candidate != "unknown":
+            return candidate
+    return None
+
+
+def _detect_script_language(value: str | None) -> str | None:
+    text = value or ""
+    if not text:
+        return None
+    arabic_chars = sum(1 for character in text if "\u0600" <= character <= "\u06FF")
+    if arabic_chars >= 8:
+        return "ar"
+    return None

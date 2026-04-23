@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,11 @@ from veriscope_training.config import AppConfig
 from veriscope_training.datasets.manifest import BuildDatasetSummary, ProcessedDatasetManifest
 from veriscope_training.datasets.registry import create_adapter, dataset_registry_summary
 from veriscope_training.preprocessing.deduplication import ProcessedDeduplicator
+from veriscope_training.preprocessing.multilingual_dataset import (
+    canonical_language,
+    rebalance_multilingual_view,
+    write_multilingual_report,
+)
 from veriscope_training.preprocessing.record_normalization import (
     ProcessedRecord,
     normalize_dataset_record,
@@ -191,9 +197,15 @@ def build_processed_datasets(config: AppConfig, options: BuildDatasetOptions) ->
         write_json(config.paths.manifest_data / "build_dataset.summary.json", payload)
         return payload
 
+    stage_dir = config.paths.interim_data / "build_dataset_stage"
+    staged_views = {
+        view_name
+        for view_name in pending_views
+        if _use_multilingual_stage(view_name=view_name, config=config)
+    }
     writers = {
         view_name: StructuredDatasetWriter(
-            config.paths.processed_data / view_name,
+            (stage_dir / view_name) if view_name in staged_views else (config.paths.processed_data / view_name),
             output_format=output_format,
             parquet_batch_size=parquet_batch_size,
             parquet_compression=parquet_compression,
@@ -227,6 +239,7 @@ def build_processed_datasets(config: AppConfig, options: BuildDatasetOptions) ->
         duplicate_events_handle = duplicate_events_path.open("w", encoding="utf-8")
 
     source_summaries: dict[str, dict[str, Any]] = {}
+    exclusion_summary: dict[str, dict[str, int]] = {}
     total_raw_records = 0
     total_processed_records = 0
     preview_samples: list[dict[str, Any]] = []
@@ -241,6 +254,7 @@ def build_processed_datasets(config: AppConfig, options: BuildDatasetOptions) ->
                 "duplicate_records_removed": 0,
                 "validation_warning_count": 0,
                 "output_views": {view_name: 0 for view_name in selected_views},
+                "excluded_counts": {},
                 "errors": [],
             }
             try:
@@ -249,46 +263,54 @@ def build_processed_datasets(config: AppConfig, options: BuildDatasetOptions) ->
                         break
                     summary["raw_records_seen"] += 1
                     total_raw_records += 1
-
-                    processed = normalize_dataset_record(
-                        raw_record,
-                        source_config=config.get_source(source_name),
-                        text_config=text_config,
-                        preprocessing_config=preprocessing_cfg,
-                    )
-                    warnings = validate_processed_record(processed)
-                    if warnings:
-                        processed.processing_metadata["validation_warnings"] = warnings
-                        summary["validation_warning_count"] += len(warnings)
-                    summary["processed_records"] += 1
-                    total_processed_records += 1
-
-                    keep, duplicate_event = deduplicator.process(processed)
-                    if not keep:
-                        summary["duplicate_records_removed"] += 1
-                        if (
-                            duplicate_events_handle is not None
-                            and duplicate_event is not None
-                            and duplicate_events_written < duplicate_event_limit
-                        ):
-                            duplicate_events_handle.write(json.dumps(duplicate_event.to_dict(), sort_keys=True))
-                            duplicate_events_handle.write("\n")
-                            duplicate_events_written += 1
+                    if _should_skip_raw_record(raw_record=raw_record, source_name=source_name, config=config):
+                        _increment_count(summary["excluded_counts"], "raw_prefiltered:english")
                         continue
 
-                    target_views = [view_name for view_name in processed.view_names() if view_name in pending_views]
-                    if not target_views:
-                        continue
-                    summary["kept_records"] += 1
-                    if len(preview_samples) < options.preview_limit:
-                        preview_samples.append(processed.to_dict())
-                    for view_name in target_views:
-                        writers[view_name].write(processed.to_dict())
-                        _update_view_stats(view_stats[view_name], processed)
-                        summary["output_views"][view_name] += 1
+                    try:
+                        processed = normalize_dataset_record(
+                            raw_record,
+                            source_config=config.get_source(source_name),
+                            text_config=text_config,
+                            preprocessing_config=preprocessing_cfg,
+                        )
+                        warnings = validate_processed_record(processed)
+                        if warnings:
+                            processed.processing_metadata["validation_warnings"] = warnings
+                            summary["validation_warning_count"] += len(warnings)
+                        summary["processed_records"] += 1
+                        total_processed_records += 1
+
+                        keep, duplicate_event = deduplicator.process(processed)
+                        if not keep:
+                            summary["duplicate_records_removed"] += 1
+                            if (
+                                duplicate_events_handle is not None
+                                and duplicate_event is not None
+                                and duplicate_events_written < duplicate_event_limit
+                            ):
+                                duplicate_events_handle.write(json.dumps(duplicate_event.to_dict(), sort_keys=True))
+                                duplicate_events_handle.write("\n")
+                                duplicate_events_written += 1
+                            continue
+
+                        target_views = [view_name for view_name in processed.view_names() if view_name in pending_views]
+                        if not target_views:
+                            _increment_count(summary["excluded_counts"], "no_target_views")
+                            continue
+                        summary["kept_records"] += 1
+                        if len(preview_samples) < options.preview_limit:
+                            preview_samples.append(processed.to_dict())
+                        for view_name in target_views:
+                            writers[view_name].write(processed.to_dict())
+                            _update_view_stats(view_stats[view_name], processed)
+                            summary["output_views"][view_name] += 1
+                    except Exception as exc:
+                        _increment_count(summary["excluded_counts"], f"processing_error:{type(exc).__name__}")
             except Exception as exc:
                 summary["errors"].append(str(exc))
             source_summaries[source_name] = summary
+            exclusion_summary[source_name] = summary["excluded_counts"]
     finally:
         if duplicate_events_handle is not None:
             duplicate_events_handle.close()
@@ -324,9 +346,12 @@ def build_processed_datasets(config: AppConfig, options: BuildDatasetOptions) ->
 
     dedupe_report_path = config.paths.manifest_data / "build_dataset.dedupe_report.json"
     write_json(dedupe_report_path, deduplicator.report().to_dict())
+    exclusion_report_path = config.paths.manifest_data / "build_dataset.exclusions.json"
+    write_json(exclusion_report_path, exclusion_summary)
 
     output_paths: dict[str, dict[str, str]] = {}
     final_view_stats: dict[str, dict[str, Any]] = {}
+    multilingual_view_reports: dict[str, Any] = {}
     for view_name in completed_views:
         manifest = existing_manifests.get(view_name) or {}
         output_paths[view_name] = manifest.get("output_paths", {})
@@ -338,18 +363,55 @@ def build_processed_datasets(config: AppConfig, options: BuildDatasetOptions) ->
             "validation_warning_count": manifest.get("validation_summary", {}).get("warning_count", 0),
         }
     for view_name, writer in writers.items():
-        output_paths[view_name] = writer.output_paths
-        final_view_stats[view_name] = view_stats[view_name]
+        if view_name in staged_views:
+            staged_records_path = _preferred_output_path(writer.output_paths)
+            rebalance_summary = rebalance_multilingual_view(
+                view_name=view_name,
+                staged_records_path=staged_records_path,
+                final_base_path=config.paths.processed_data / view_name,
+                output_format=output_format,
+                parquet_batch_size=parquet_batch_size,
+                parquet_compression=parquet_compression,
+                balance_config=_multilingual_config(config),
+            )
+            multilingual_view_reports[view_name] = rebalance_summary
+            output_paths[view_name] = rebalance_summary["final_output_paths"]
+            final_view_stats[view_name] = _view_stats_from_report(rebalance_summary["post_balance"])
+        else:
+            output_paths[view_name] = writer.output_paths
+            final_view_stats[view_name] = view_stats[view_name]
+
+    locally_available_sources = [
+        source_name
+        for source_name in sorted(config.sources)
+        if config.snapshot_path_for(source_name).exists()
+    ]
+    if multilingual_view_reports:
+        report_paths = write_multilingual_report(
+            report_base_path=config.paths.manifest_data / "multilingual_dataset_report",
+            selected_sources=selected_sources,
+            configured_sources=sorted(config.sources),
+            locally_available_sources=locally_available_sources,
+            source_summaries=source_summaries,
+            exclusion_summary=exclusion_summary,
+            view_reports=multilingual_view_reports,
+        )
+    else:
+        report_paths = {}
+
+    for view_name in pending_views:
+        manifest_output_paths = output_paths[view_name]
+        manifest_view_stats = final_view_stats[view_name]
         manifest = ProcessedDatasetManifest(
             view_name=view_name,
-            output_paths=writer.output_paths,
-            record_count=view_stats[view_name]["record_count"],
-            sources=sorted(view_stats[view_name]["source_counts"]),
-            source_counts=view_stats[view_name]["source_counts"],
-            label_counts=view_stats[view_name]["label_counts"],
-            modality_counts=view_stats[view_name]["modality_counts"],
-            warnings=(["empty_dataset"] if view_stats[view_name]["record_count"] == 0 else []),
-            validation_summary={"warning_count": view_stats[view_name]["validation_warning_count"]},
+            output_paths=manifest_output_paths,
+            record_count=manifest_view_stats["record_count"],
+            sources=sorted(manifest_view_stats["source_counts"]),
+            source_counts=manifest_view_stats["source_counts"],
+            label_counts=manifest_view_stats["label_counts"],
+            modality_counts=manifest_view_stats["modality_counts"],
+            warnings=(["empty_dataset"] if manifest_view_stats["record_count"] == 0 else []),
+            validation_summary={"warning_count": manifest_view_stats["validation_warning_count"]},
             dedupe_summary=deduplicator.report().to_dict(),
             metadata={
                 "output_format": output_format,
@@ -357,6 +419,7 @@ def build_processed_datasets(config: AppConfig, options: BuildDatasetOptions) ->
                 "storage_policy": preprocessing_cfg.get("storage", {}),
                 "preflight": preflight,
                 "resumed": False,
+                "multilingual_rebalance": multilingual_view_reports.get(view_name),
             },
         )
         write_json(config.paths.manifest_data / f"{view_name}.manifest.json", manifest.to_dict())
@@ -385,6 +448,9 @@ def build_processed_datasets(config: AppConfig, options: BuildDatasetOptions) ->
             "build_state_path": str(build_state_path),
             "duplicate_event_samples_saved": duplicate_events_written,
             "duplicate_event_sample_limit": duplicate_event_limit,
+            "exclusion_report_path": str(exclusion_report_path),
+            "multilingual_report_paths": report_paths,
+            "multilingual_view_reports": multilingual_view_reports,
         },
     )
     summary_path = config.paths.manifest_data / "build_dataset.summary.json"
@@ -473,6 +539,69 @@ def _duplicate_event_limit(config: AppConfig) -> int:
     return int(
         config.experiments_config.get("datasets", {}).get("deduplication", {}).get("duplicate_event_sample_limit", 200)
     )
+
+
+def _multilingual_config(config: AppConfig) -> dict[str, Any]:
+    return config.experiments_config.get("datasets", {}).get("multilingual", {})
+
+
+def _use_multilingual_stage(*, view_name: str, config: AppConfig) -> bool:
+    multilingual_cfg = _multilingual_config(config)
+    if not multilingual_cfg.get("enabled", False):
+        return False
+    selected_views = set(multilingual_cfg.get("rebalance_views", ["unified_url_dataset", "unified_webpage_dataset"]))
+    return view_name in selected_views
+
+
+def _preferred_output_path(output_paths: dict[str, str]) -> Path:
+    if "parquet" in output_paths:
+        return Path(output_paths["parquet"])
+    if "jsonl" in output_paths:
+        return Path(output_paths["jsonl"])
+    raise ValueError("No output path available for staged view.")
+
+
+def _view_stats_from_report(report: dict[str, Any]) -> dict[str, Any]:
+    counts_by_label = report.get("counts_by_label", {})
+    return {
+        "record_count": int(report.get("total_sample_count", 0)),
+        "source_counts": report.get("counts_by_dataset", {}),
+        "label_counts": {
+            "phishing": int(counts_by_label.get("phishing", 0)),
+            "benign": int(counts_by_label.get("benign", 0)),
+            "null": int(counts_by_label.get("null", 0)),
+        },
+        "modality_counts": report.get("modality_counts", {}),
+        "validation_warning_count": int(report.get("validation_warning_count", 0)),
+    }
+
+
+def _increment_count(counter: dict[str, int], key: str) -> None:
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _should_skip_raw_record(*, raw_record: Any, source_name: str, config: AppConfig) -> bool:
+    multilingual_cfg = _multilingual_config(config)
+    if not multilingual_cfg.get("enabled", False):
+        return False
+    if source_name != "phreshphish":
+        return False
+    keep_ratio = float(multilingual_cfg.get("english_prefilter_keep_ratio", 1.0))
+    if keep_ratio >= 1.0:
+        return False
+    language = canonical_language(getattr(raw_record, "language", None))
+    if language != "en":
+        return False
+    sample_id = getattr(raw_record, "sample_id", None)
+    if not sample_id:
+        return False
+    return _stable_fraction(str(sample_id), salt="english_prefilter") > keep_ratio
+
+
+def _stable_fraction(value: str, *, salt: str) -> float:
+    digest = hashlib.sha256(f"{salt}:{value}".encode("utf-8")).digest()
+    bucket = int.from_bytes(digest[:8], "big", signed=False)
+    return bucket / float(2**64 - 1)
 
 
 def _load_existing_build_summary(config: AppConfig) -> dict[str, Any] | None:

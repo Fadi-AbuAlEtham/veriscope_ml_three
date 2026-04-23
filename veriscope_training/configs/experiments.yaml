@@ -58,6 +58,22 @@ datasets:
     text_hash: true
     save_duplicate_events: true
     duplicate_event_sample_limit: 200
+  multilingual:
+    enabled: true
+    rebalance_views:
+      - unified_url_dataset
+      - unified_webpage_dataset
+    priority_languages:
+      - en
+      - ar
+      - fr
+    english_prefilter_keep_ratio: 0.32
+    max_english_share: 0.60
+    min_english_records: 50000
+    oversample_language_label_minimums:
+      ar:
+        phishing: 1000
+        benign: 1000
 
 splits:
   default_strategy: "domain_aware"
