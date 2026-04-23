@@ -1,0 +1,189 @@
+version: 1
+
+paths:
+  raw_root: data/raw
+  interim_root: data/interim
+  processed_root: data/processed
+  manifest_root: data/manifests
+
+defaults:
+  local_snapshot_access: true
+  unresolved_label_strategy: exclude
+  binary_label_map:
+    phishing: 1
+    benign: 0
+  language_detection:
+    enabled: true
+    default: unknown
+
+sources:
+  phreshphish:
+    enabled: true
+    description: "Primary webpage phishing dataset with URL and HTML content."
+    access: "manual_snapshot"
+    snapshot_path: "data/raw/phreshphish"
+    snapshot_glob: "**/*"
+    modalities: ["url", "html", "text"]
+    intended_use: ["webpage_training", "fusion_training", "url_context"]
+    label_strategy: "binary"
+    supported_local_formats: ["parquet", "jsonl", "json", "csv", "tsv"]
+    huggingface:
+      enabled: true
+      dataset_id: "phreshphish/phreshphish"
+      splits: ["train", "test"]
+      streaming: true
+    fetch:
+      fetch_mode: auto
+      output_dir: "data/raw/phreshphish"
+      resumable: true
+      remote_source:
+        type: huggingface_dataset_snapshot
+        dataset_id: "phreshphish/phreshphish"
+        repo_type: "dataset"
+        hf_token_env: "HF_TOKEN"
+        allow_patterns: ["*.parquet", "*.json", "*.md", "README.md", "dataset_infos.json"]
+      streaming_preview:
+        enabled: true
+        sample_limit: 100
+    notes:
+      - "Treat as webpage-level phishing data, not plain text classification."
+      - "If no local snapshot is present, the adapter can stream from Hugging Face when the optional datasets dependency is installed."
+
+  openphish:
+    enabled: true
+    description: "Fresh phishing URL feed snapshots for recency-aware validation and URL-centric experiments."
+    access: "manual_snapshot"
+    snapshot_path: "data/raw/openphish"
+    snapshot_glob: "**/*"
+    modalities: ["url"]
+    intended_use: ["url_training", "recency_testing", "threat_coverage"]
+    label_strategy: "binary"
+    supported_local_formats: ["txt", "csv", "tsv", "jsonl", "json", "parquet"]
+    fetch:
+      fetch_mode: auto
+      output_dir: "data/raw/openphish"
+      resumable: true
+      remote_source:
+        type: openphish_feed
+        variant: community
+        community_url: "https://raw.githubusercontent.com/openphish/public_feed/refs/heads/main/feed.txt"
+        academic_or_premium_url_env: "OPENPHISH_FETCH_URL"
+        username_env: "OPENPHISH_USERNAME"
+        password_env: "OPENPHISH_PASSWORD"
+        token_env: "OPENPHISH_TOKEN"
+      expected_patterns: ["*.txt", "*.csv", "*.tsv", "*.json", "*.jsonl", "*.parquet"]
+    notes:
+      - "Expect local feed snapshots because direct feed access may require credentials or terms acceptance."
+      - "Community feed snapshots are commonly plain-text URL lists. Premium snapshots may include CSV/JSON metadata."
+
+  phishtank:
+    enabled: true
+    description: "Real-world phishing URL snapshots for coverage and time-aware evaluation."
+    access: "manual_snapshot"
+    snapshot_path: "data/raw/phishtank"
+    snapshot_glob: "**/*"
+    modalities: ["url"]
+    intended_use: ["url_training", "recency_testing", "threat_coverage"]
+    label_strategy: "binary"
+    supported_local_formats: ["csv", "xml", "json", "csv.gz", "xml.gz", "json.gz", "csv.bz2", "xml.bz2", "json.bz2"]
+    fetch:
+      fetch_mode: auto
+      output_dir: "data/raw/phishtank"
+      resumable: true
+      remote_source:
+        type: phishtank_bulk_download
+        format: "json.bz2"
+        public_url: "http://data.dev.phishtank.com/data/online-valid.json.bz2"
+        app_key_env: "PHISHTANK_APP_KEY"
+        user_agent_env: "PHISHTANK_USER_AGENT"
+        app_key_url_template: "http://data.dev.phishtank.com/data/{app_key}/online-valid.json.bz2"
+      expected_patterns: ["*.csv", "*.xml", "*.json", "*.csv.gz", "*.xml.gz", "*.json.gz", "*.csv.bz2", "*.xml.bz2", "*.json.bz2"]
+    notes:
+      - "The adapter expects official or equivalent local snapshots and does not fabricate benign samples."
+
+  uci_phishing:
+    enabled: true
+    description: "Structured tabular phishing website baseline dataset."
+    access: "manual_snapshot"
+    snapshot_path: "data/raw/uci_phishing"
+    snapshot_glob: "**/*"
+    modalities: ["tabular"]
+    intended_use: ["tabular_baselines"]
+    label_strategy: "binary"
+    supported_local_formats: ["arff", "csv", "tsv", "jsonl", "json", "parquet"]
+    fetch:
+      fetch_mode: auto
+      output_dir: "data/raw/uci_phishing"
+      resumable: true
+      remote_source:
+        type: ucimlrepo
+        dataset_id: 327
+        expected_primary_file: "uci_phishing.csv"
+    notes:
+      - "Keep separate from webpage text and HTML training because the modality is incompatible."
+      - "For the classic UCI Phishing Websites dataset, the adapter maps label -1 to phishing and label 1 to benign."
+
+  mendeley:
+    enabled: true
+    description: "Supplementary phishing webpage data with URL and HTML where available."
+    access: "manual_snapshot"
+    snapshot_path: "data/raw/mendeley"
+    snapshot_glob: "**/*"
+    modalities: ["url", "html", "text"]
+    intended_use: ["webpage_training", "fusion_training"]
+    label_strategy: "binary"
+    supported_local_formats: ["csv", "tsv", "jsonl", "json", "parquet", "html", "htm", "txt"]
+    label_map:
+      phishing: ["phish", "phishing", "malicious", "fraudulent"]
+      benign: ["benign", "legitimate", "safe", "legit"]
+      uncertain: ["suspicious", "unknown", "uncertain"]
+    fetch:
+      fetch_mode: manual_snapshot
+      output_dir: "data/raw/mendeley"
+      resumable: true
+      remote_source:
+        type: manual_server_snapshot
+        expected_layout:
+          - "structured files such as csv/tsv/jsonl/json/parquet under data/raw/mendeley/"
+          - "or html/txt files grouped in phishing/ and benign/ subdirectories"
+      expected_patterns: ["*.csv", "*.tsv", "*.jsonl", "*.json", "*.parquet", "*.html", "*.htm", "*.txt"]
+    notes:
+      - "Use local snapshots because Mendeley mirrors vary in structure."
+      - "Numeric labels are treated as ambiguous unless you override label_map in config for your specific snapshot."
+
+  oscar_aux:
+    enabled: false
+    description: "Optional multilingual auxiliary text corpus for robustness or representation experiments."
+    access: "manual_snapshot"
+    snapshot_path: "data/raw/oscar_aux"
+    snapshot_glob: "**/*"
+    modalities: ["aux_text"]
+    intended_use: ["multilingual_auxiliary_support"]
+    label_strategy: "unlabeled_auxiliary"
+    supported_local_formats: ["jsonl", "json", "parquet", "csv", "tsv", "txt"]
+    huggingface:
+      enabled: false
+      dataset_id: "oscar-corpus/oscar"
+      config_name: null
+      split: "train"
+      streaming: true
+    fetch:
+      fetch_mode: auto
+      output_dir: "data/raw/oscar_aux"
+      resumable: true
+      remote_source:
+        type: huggingface_dataset_subset
+        dataset_id: "oscar-corpus/oscar"
+        config_name: "unshuffled_deduplicated_en"
+        split: "train"
+        hf_token_env: "HF_TOKEN"
+        text_field: "text"
+        id_field: "id"
+        max_records: 50000
+      streaming_preview:
+        enabled: true
+        sample_limit: 100
+    notes:
+      - "Do not treat OSCAR as labeled phishing data."
+      - "Use only in documented auxiliary or pretraining experiments."
+      - "Some Hugging Face OSCAR variants are gated or temporarily unavailable, so local snapshots remain the safest path."

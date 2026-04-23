@@ -1,0 +1,224 @@
+version: 1
+
+reproducibility:
+  seed: 42
+  numpy_seed: 42
+  python_hash_seed: 42
+
+artifacts:
+  output_root: outputs
+  experiment_root: outputs/experiments
+  metrics_root: outputs/metrics
+  models_root: outputs/models
+  reports_root: outputs/reports
+  training_root: outputs/training
+  adaptive_root: outputs/adaptive
+
+datasets:
+  output_format: parquet
+  parquet_batch_size: 512
+  parquet_compression: zstd
+  preview_limit: 5
+  persist_intermediate_manifests: true
+  save_dataset_statistics: true
+  resume:
+    skip_completed_views: true
+  preprocessing:
+    url:
+      suspicious_keywords:
+        - login
+        - verify
+        - update
+        - secure
+        - account
+        - signin
+        - confirm
+        - password
+        - wallet
+        - bank
+        - auth
+    html:
+      max_action_texts: 20
+    text:
+      unicode_normalization: NFKC
+      lowercase: false
+      collapse_whitespace: true
+      strip_control_characters: true
+      preserve_urls: true
+      preserve_emails: true
+    storage:
+      keep_raw_html: false
+      keep_extracted_text: true
+      keep_normalized_text: true
+  deduplication:
+    enabled: true
+    policy: first_seen
+    url_key: true
+    html_hash: true
+    text_hash: true
+    save_duplicate_events: true
+    duplicate_event_sample_limit: 200
+
+splits:
+  default_strategy: "domain_aware"
+  validation_fraction: 0.1
+  test_fraction: 0.2
+  stratify_on_label: true
+  save_manifests: true
+  domain_column: "registered_domain"
+  timestamp_column: "timestamp"
+  source_column: "source"
+
+training:
+  transformer_server_side_only: true
+  save_test_predictions: true
+  adaptive_exports_from_predictions: true
+
+adaptive:
+  uncertainty_band: [0.4, 0.6]
+  heuristic_top_k: 25
+  auto_deploy: false
+
+evaluation:
+  default_split: test
+  emphasize_metrics:
+    - f1
+    - precision
+    - recall
+    - pr_auc
+    - false_positive_rate
+  save_confusion_matrix_png: true
+  benchmark_inference: true
+  selection_weights:
+    f1: 0.30
+    pr_auc: 0.25
+    precision: 0.20
+    recall: 0.10
+    false_positive_rate: 0.10
+    false_negative_rate: 0.03
+    artifact_size_mb: 0.02
+  threshold_calibration:
+    binary_objective: maximize_f1
+    precision_floor: 0.90
+    recall_floor: 0.70
+    max_thresholds: 200
+    low_bucket_max_phishing_rate: 0.05
+    min_low_bucket_coverage: 0.10
+    high_threshold_strategy: binary_threshold
+    high_bucket_precision_floor: 0.90
+    high_bucket_recall_floor: 0.40
+    min_medium_width: 0.05
+    min_bucket_support: 10
+
+experiment_groups:
+  url_baselines:
+    continue_on_error: true
+    skip_completed: true
+    runs:
+      - track: url
+        model: tfidf_logreg
+      - track: url
+        model: tfidf_linear_svm
+      - track: url
+        model: handcrafted_boosting
+
+  webpage_baselines:
+    continue_on_error: true
+    skip_completed: true
+    runs:
+      - track: webpage
+        model: text_tfidf_logreg
+      - track: webpage
+        model: text_tfidf_linear_svm
+
+  transformer_comparison:
+    continue_on_error: true
+    skip_completed: true
+    runs:
+      - track: transformer
+        model: xlmr_sequence_classifier
+      - track: transformer
+        model: mbert_sequence_classifier
+
+  tabular_baselines:
+    continue_on_error: true
+    skip_completed: true
+    runs:
+      - track: tabular
+        model: logistic_regression
+      - track: tabular
+        model: random_forest
+      - track: tabular
+        model: gradient_boosting_optional
+
+  baseline_suite:
+    continue_on_error: true
+    skip_completed: true
+    runs:
+      - track: url
+        model: tfidf_logreg
+      - track: url
+        model: tfidf_linear_svm
+      - track: url
+        model: handcrafted_boosting
+      - track: webpage
+        model: text_tfidf_logreg
+      - track: webpage
+        model: text_tfidf_linear_svm
+      - track: tabular
+        model: logistic_regression
+      - track: tabular
+        model: random_forest
+      - track: tabular
+        model: gradient_boosting_optional
+
+  full_suite:
+    continue_on_error: true
+    skip_completed: true
+    runs:
+      - track: url
+        model: tfidf_logreg
+      - track: url
+        model: tfidf_linear_svm
+      - track: url
+        model: handcrafted_boosting
+      - track: webpage
+        model: text_tfidf_logreg
+      - track: webpage
+        model: text_tfidf_linear_svm
+      - track: transformer
+        model: xlmr_sequence_classifier
+      - track: transformer
+        model: mbert_sequence_classifier
+      - track: tabular
+        model: logistic_regression
+      - track: tabular
+        model: random_forest
+      - track: tabular
+        model: gradient_boosting_optional
+
+  first_real_suite:
+    continue_on_error: true
+    skip_completed: true
+    runs:
+      - track: url
+        model: tfidf_logreg
+        split_strategy: domain_aware
+      - track: url
+        model: tfidf_linear_svm
+        split_strategy: domain_aware
+      - track: webpage
+        model: text_tfidf_linear_svm
+        split_strategy: domain_aware
+      - track: transformer
+        model: xlmr_sequence_classifier
+        split_strategy: domain_aware
+      - track: transformer
+        model: mbert_sequence_classifier
+        split_strategy: domain_aware
+      - track: tabular
+        model: logistic_regression
+        split_strategy: random_stratified
+      - track: tabular
+        model: random_forest
+        split_strategy: random_stratified

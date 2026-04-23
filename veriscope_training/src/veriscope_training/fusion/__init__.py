@@ -1,0 +1,3 @@
+from veriscope_training.fusion.evaluation import align_predictions, compute_fusion_metrics
+from veriscope_training.fusion.weighted_fusion import apply_weighted_fusion
+from veriscope_training.fusion.cascade_fusion import apply_cascade_fusion

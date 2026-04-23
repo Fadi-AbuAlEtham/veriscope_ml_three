@@ -1,0 +1,143 @@
+version: 1
+
+url_models:
+  tfidf_logreg:
+    enabled: true
+    vectorizer:
+      analyzer: "char_wb"
+      ngram_range: [3, 5]
+      min_df: 2
+      max_features: 200000
+    classifier:
+      type: "logistic_regression"
+      class_weight: "balanced"
+      max_iter: 2000
+
+  tfidf_linear_svm:
+    enabled: true
+    vectorizer:
+      analyzer: "char_wb"
+      ngram_range: [3, 5]
+      min_df: 2
+      max_features: 200000
+    classifier:
+      type: "linear_svm"
+      class_weight: "balanced"
+
+  handcrafted_boosting:
+    enabled: true
+    classifier:
+      type: "random_forest"
+      n_estimators: 300
+      max_depth: null
+      class_weight: "balanced_subsample"
+
+webpage_models:
+  text_tfidf_linear_svm:
+    enabled: true
+    vectorizer:
+      analyzer: "word"
+      ngram_range: [1, 2]
+      min_df: 2
+      max_features: 250000
+    classifier:
+      type: "linear_svm"
+      class_weight: "balanced"
+
+  text_tfidf_logreg:
+    enabled: true
+    vectorizer:
+      analyzer: "word"
+      ngram_range: [1, 2]
+      min_df: 2
+      max_features: 250000
+    classifier:
+      type: "logistic_regression"
+      class_weight: "balanced"
+      max_iter: 3000
+
+transformer_models:
+  xlmr_sequence_classifier:
+    enabled: true
+    model_name: "xlm-roberta-base"
+    training_mode: "frozen_encoder"
+    max_length: 256
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
+    num_train_epochs: 2
+    learning_rate: 2.0e-5
+    weight_decay: 0.01
+    force_cpu: false
+    notes:
+      - "Primary multilingual transformer for server-side webpage/text phishing detection."
+
+  xlmr_finetuned:
+    enabled: true
+    model_name: "xlm-roberta-base"
+    training_mode: "full_finetune"
+    max_length: 256
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
+    num_train_epochs: 3
+    learning_rate: 2.0e-5
+    weight_decay: 0.01
+    force_cpu: false
+    force_gpu: true
+    fp16: true
+    notes:
+      - "Full fine-tuned XLM-R for Iteration 2."
+
+  mbert_sequence_classifier:
+    enabled: true
+    model_name: "bert-base-multilingual-cased"
+    training_mode: "frozen_encoder"
+    max_length: 256
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
+    num_train_epochs: 2
+    learning_rate: 2.0e-5
+    weight_decay: 0.01
+    force_cpu: false
+    notes:
+      - "Comparison multilingual transformer baseline."
+
+tabular_models:
+  logistic_regression:
+    enabled: true
+    class_weight: "balanced"
+    max_iter: 2000
+
+  random_forest:
+    enabled: true
+    n_estimators: 400
+    class_weight: "balanced_subsample"
+
+  gradient_boosting_optional:
+    enabled: true
+    backend_preference: ["xgboost", "lightgbm"]
+    n_estimators: 300
+    learning_rate: 0.05
+    max_depth: 6
+
+fusion_models:
+  engineered_concat:
+    enabled: true
+    combine:
+      - url_features
+      - html_features
+      - text_tfidf
+    classifier:
+      type: "logistic_regression"
+      class_weight: "balanced"
+      max_iter: 3000
+
+  late_fusion:
+    enabled: true
+    combine:
+      - url_score
+      - webpage_text_score
+      - html_feature_score
+    classifier:
+      type: "logistic_regression"
+      class_weight: "balanced"
+      max_iter: 2000
