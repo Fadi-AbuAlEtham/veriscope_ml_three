@@ -1,0 +1,68 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# =========================
+# IDE / Editor
+# =========================
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# Data (VERY IMPORTANT)
+# =========================
+veriscope_training/data/raw/
+veriscope_training/data/processed/
+veriscope_training/data/interim/
+veriscope_training/data/manifests/
+
+# =========================
+# Training outputs (VERY IMPORTANT)
+# =========================
+veriscope_training/outputs/
+
+# =========================
+# Models / artifacts
+# =========================
+*.pt
+*.bin
+*.model
+*.ckpt
+
+# =========================
+# Parquet / datasets
+# =========================
+*.parquet
+*.csv
+*.tsv
+*.jsonl
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# System / temp
+# =========================
+*.tmp
+*.swp
